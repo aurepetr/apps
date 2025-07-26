@@ -16,15 +16,17 @@ from dotenv import load_dotenv
 import os
 
 # === SETTINGS ===
-load_dotenv()  # Load environment variables from .env
+load_dotenv()  # Load environment variables
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ✅ Set Tesseract path for Windows only
-if os.name == "nt":
+# ✅ Tesseract path setup
+if os.name == "nt":  # Windows
     pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+else:  # Linux (server)
+    pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
-# ✅ Define Poppler path (server & Windows)
-POPLER_PATH = r"C:\poppler\Library\bin" if os.name == "nt" else "/usr/bin"
+# ✅ Poppler path (Windows only, Linux uses system installation)
+POPLER_PATH = r"C:\poppler\Library\bin" if os.name == "nt" else None
 
 # === FASTAPI APP ===
 app = FastAPI(title="Invoice Extractor Website")
@@ -44,26 +46,26 @@ def detect_supplier(ocr_text: str) -> str:
 
 
 def extract_table_lines(ocr_text: str) -> str:
-    table_lines = [
-        line.strip() for line in ocr_text.split("\n")
+    return "\n".join([
+        line.strip()
+        for line in ocr_text.split("\n")
         if any(char.isdigit() for char in line) and len(line.split()) > 2
-    ]
-    return "\n".join(table_lines)
+    ])
 
 
 def process_pdf(pdf_bytes: bytes) -> pd.DataFrame:
-    # ✅ Explicitly tell pdf2image where to find Poppler
+    # ✅ Convert PDF to images (Poppler only needed for Windows)
     images = convert_from_bytes(pdf_bytes, dpi=300, poppler_path=POPLER_PATH)
     ocr_text = ""
 
     for page in images:
         img = cv2.cvtColor(np.array(page), cv2.COLOR_RGB2BGR)
-        text = pytesseract.image_to_string(img, config="--psm 6")
-        ocr_text += f"\n{text}\n"
+        ocr_text += f"\n{pytesseract.image_to_string(img, config='--psm 6')}\n"
 
     supplier = detect_supplier(ocr_text)
     cleaned_ocr_text = extract_table_lines(ocr_text)
 
+    # ✅ Send to OpenAI for table extraction
     prompt = f"""
     Extract ONLY the product table from this invoice.
     Output clean CSV in this format:
@@ -85,6 +87,7 @@ def process_pdf(pdf_bytes: bytes) -> pd.DataFrame:
 
     table_csv = response.choices[0].message.content.strip()
 
+    # ✅ Parse CSV into DataFrame
     rows = []
     reader = csv.reader(StringIO(table_csv))
     for row in reader:
@@ -97,7 +100,7 @@ def process_pdf(pdf_bytes: bytes) -> pd.DataFrame:
         for r in rows:
             if len(r) > 4:
                 pavadinimas = " ".join(r[:-3]).strip()
-                fixed_rows.append([pavadinimas, r[-3].strip(), r[-2].strip(), r[-1].strip()])
+                fixed_rows.append([pavadinimas, r[-3], r[-2], r[-1]])
             elif len(r) < 4:
                 r += [""] * (4 - len(r))
                 fixed_rows.append(r)
