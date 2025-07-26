@@ -1,5 +1,5 @@
 from fastapi import FastAPI, File, UploadFile, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import pandas as pd
@@ -9,23 +9,28 @@ import numpy as np
 from pdf2image import convert_from_bytes
 from openai import OpenAI
 import re
-from io import StringIO, BytesIO
+from io import StringIO
 import csv
 from datetime import datetime
 from dotenv import load_dotenv
 import os
 
 # === SETTINGS ===
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-load_dotenv()  # ✅ Load environment variables from .env
+load_dotenv()  # Load environment variables from .env
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# ✅ Set Tesseract path only on Windows
+if os.name == "nt":
+    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 app = FastAPI(title="Invoice Extractor Website")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-def detect_supplier(ocr_text):
+
+# === HELPER FUNCTIONS ===
+def detect_supplier(ocr_text: str) -> str:
     match = re.search(r'\b(UAB|MB)\s+"?([A-Za-z0-9\s]+)"?', ocr_text, re.IGNORECASE)
     if match:
         supplier = match.group(2).strip()
@@ -33,16 +38,19 @@ def detect_supplier(ocr_text):
             return supplier
     return "Unknown Supplier"
 
-def extract_table_lines(ocr_text):
-    table_lines = []
-    for line in ocr_text.split("\n"):
-        if any(char.isdigit() for char in line) and len(line.split()) > 2:
-            table_lines.append(line.strip())
+
+def extract_table_lines(ocr_text: str) -> str:
+    table_lines = [
+        line.strip() for line in ocr_text.split("\n")
+        if any(char.isdigit() for char in line) and len(line.split()) > 2
+    ]
     return "\n".join(table_lines)
 
-def process_pdf(pdf_bytes):
+
+def process_pdf(pdf_bytes: bytes) -> pd.DataFrame:
     images = convert_from_bytes(pdf_bytes, dpi=300)
     ocr_text = ""
+
     for page in images:
         img = cv2.cvtColor(np.array(page), cv2.COLOR_RGB2BGR)
         text = pytesseract.image_to_string(img, config="--psm 6")
@@ -69,6 +77,7 @@ def process_pdf(pdf_bytes):
             {"role": "user", "content": prompt}
         ]
     )
+
     table_csv = response.choices[0].message.content.strip()
 
     rows = []
@@ -89,6 +98,7 @@ def process_pdf(pdf_bytes):
                 fixed_rows.append(r)
             else:
                 fixed_rows.append(r)
+
         df = pd.DataFrame(fixed_rows[1:], columns=["Pavadinimas", "Kiekis", "Kaina be PVM", "Suma EUR"])
     else:
         df = pd.DataFrame(columns=["Pavadinimas", "Kiekis", "Kaina be PVM", "Suma EUR"])
@@ -96,18 +106,29 @@ def process_pdf(pdf_bytes):
     df["Supplier"] = supplier
     return df
 
+
+# === ROUTES ===
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
+
 @app.post("/upload/")
 async def upload_invoice(file: UploadFile = File(...)):
-    pdf_bytes = await file.read()
-    df = process_pdf(pdf_bytes)
-    if df.empty:
-        return {"message": "No table extracted."}
+    try:
+        pdf_bytes = await file.read()
+        df = process_pdf(pdf_bytes)
 
-    output_file = f"invoice_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    df.to_excel(output_file, index=False, engine="openpyxl")
+        if df.empty:
+            return JSONResponse({"message": "No table extracted."}, status_code=200)
 
-    return FileResponse(output_file, filename=output_file)
+        output_dir = "outputs"
+        os.makedirs(output_dir, exist_ok=True)
+        output_file = os.path.join(output_dir, f"invoice_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+
+        df.to_excel(output_file, index=False, engine="openpyxl")
+
+        return FileResponse(output_file, filename=os.path.basename(output_file))
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
