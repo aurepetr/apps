@@ -1,0 +1,13 @@
+# Python cache and compiled files
+__pycache__/
+*.pyc
+
+# Environment files
+.env
+
+# Virtual environment (if any)
+venv/
+
+# Any generated output files
+*.xlsx
+*.csv

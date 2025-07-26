@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+jinja2
+python-multipart
+openai
+pandas
+pytesseract
+pdf2image
+opencv-python-headless
+openpyxl
