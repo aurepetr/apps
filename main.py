@@ -19,10 +19,14 @@ import os
 load_dotenv()  # Load environment variables from .env
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ✅ Set Tesseract path only on Windows
+# ✅ Set Tesseract path for Windows only
 if os.name == "nt":
     pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
+# ✅ Define Poppler path (server & Windows)
+POPLER_PATH = r"C:\poppler\Library\bin" if os.name == "nt" else "/usr/bin"
+
+# === FASTAPI APP ===
 app = FastAPI(title="Invoice Extractor Website")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -48,7 +52,8 @@ def extract_table_lines(ocr_text: str) -> str:
 
 
 def process_pdf(pdf_bytes: bytes) -> pd.DataFrame:
-    images = convert_from_bytes(pdf_bytes, dpi=300)
+    # ✅ Explicitly tell pdf2image where to find Poppler
+    images = convert_from_bytes(pdf_bytes, dpi=300, poppler_path=POPLER_PATH)
     ocr_text = ""
 
     for page in images:
